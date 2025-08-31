@@ -29,7 +29,7 @@ const FinalSelectionComponent = ({
                 <div key={candidate.id} className="candidate-card">
                   <div className="candidate-card__name">{candidate.name}</div>
                   <div className="candidate-card__location">
-                    {candidate.location}
+                    {candidate.location ?? "Not Specified"}
                   </div>
                   <div className="candidate-card__experience">
                     {candidate.work_experiences?.length || 0} experiences

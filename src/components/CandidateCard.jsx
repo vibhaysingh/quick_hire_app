@@ -55,7 +55,9 @@ const CandidateCardComponent = ({
       )}
 
       <div className="candidate-card__name">{candidate.name}</div>
-      <div className="candidate-card__location">{`📍 ${candidate.location}`}</div>
+      <div className="candidate-card__location">{`📍 ${
+        candidate.location || "Not Specified"
+      }`}</div>
 
       <div className="candidate-card__info">
         <div className="candidate-card__info-row">

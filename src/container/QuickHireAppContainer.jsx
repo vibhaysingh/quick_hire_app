@@ -11,6 +11,7 @@ import { CandidateModal } from "../components/CandidateModal";
 import { INITIAL_FILTERS } from "../constants/common.constants";
 import { useCandidates } from "../hooks/useCandidates";
 import { useFilteredCandidates } from "../hooks/useFilteredCandidates";
+import { useAIFiltering } from "../hooks/useAIFiltering";
 
 // Main App Component
 const QuickHireAppContainer = () => {
@@ -23,10 +24,24 @@ const QuickHireAppContainer = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filters, setFilters] = useState(INITIAL_FILTERS);
   const [currentPage, setCurrentPage] = useState(1);
+  const [apiKey, setApiKey] = useState(
+    localStorage.getItem("gemini_api_key") || ""
+  );
   const itemsPerPage = 15;
 
+  // Use custom hooks
   const { candidates, isLoading, uniqueLocations, uniqueSkills } =
     useCandidates();
+
+  const {
+    isAIMode,
+    setIsAIMode,
+    isLoading: isAILoading,
+    processAIPrompt,
+    error: aiError,
+    clearError,
+    checkAPIKey,
+  } = useAIFiltering();
 
   const filteredCandidates = useFilteredCandidates(
     candidates,
@@ -45,6 +60,25 @@ const QuickHireAppContainer = () => {
   useEffect(() => {
     debouncedSearch(searchTerm);
   }, [searchTerm, debouncedSearch]);
+
+  // Handle AI prompt processing
+  const handleAIPrompt = async (prompt) => {
+    if (!isAIMode || !prompt.trim()) return;
+
+    const aiFilters = await processAIPrompt(prompt, apiKey);
+    if (aiFilters && Object.keys(aiFilters).length > 0) {
+      // Merge AI filters with existing filters, preserving manual selections
+      setFilters((prev) => ({
+        ...prev,
+        ...aiFilters,
+        // Merge arrays for locations and skills instead of replacing
+        locations: [...prev.locations, ...(aiFilters.locations || [])],
+        skills: [...prev.skills, ...(aiFilters.skills || [])],
+      }));
+      setCurrentPage(1);
+      console.log("✨ Gemini AI: Filters applied successfully");
+    }
+  };
 
   const paginatedCandidates = useMemo(() => {
     const startIndex = (currentPage - 1) * itemsPerPage;
@@ -174,6 +208,16 @@ const QuickHireAppContainer = () => {
             totalPages={totalPages}
             setCurrentPage={setCurrentPage}
             resetFilters={resetFilters}
+            // AI functionality props
+            isAIMode={isAIMode}
+            setIsAIMode={setIsAIMode}
+            isAILoading={isAILoading}
+            onAIPrompt={handleAIPrompt}
+            apiKey={apiKey}
+            setApiKey={setApiKey}
+            aiError={aiError}
+            clearError={clearError}
+            checkAPIKey={checkAPIKey}
             getCandidateStatus={getCandidateStatus}
             onCandidateClick={setSelectedCandidate}
             addToShortlist={addToShortlist}
