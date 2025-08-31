@@ -1,20 +1,29 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
-import { uniqueId } from "lodash-es";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { uniqueId, debounce } from "lodash-es";
 
-import candidatesData from "./data/cadidates.json";
+import candidatesData from "./data/candidates.json";
 import quickHireLogoDark from "./data/quick-hire-logo-dark.svg";
 
 // Utility functions
-const debounce = (func, wait) => {
-  let timeout;
-  return function executedFunction(...args) {
-    const later = () => {
-      clearTimeout(timeout);
-      func(...args);
-    };
-    clearTimeout(timeout);
-    timeout = setTimeout(later, wait);
-  };
+
+// Helper function to check if salary falls within expectation range
+const getSalaryRange = (rangeValue) => {
+  switch (rangeValue) {
+    case "$0 - $50k":
+      return { min: 0, max: 50000 };
+    case "$50k - $100k":
+      return { min: 50000, max: 100000 };
+    case "$100k - $150k":
+      return { min: 100000, max: 150000 };
+    case "$150k - $200k":
+      return { min: 150000, max: 200000 };
+    case "$200k - $250k":
+      return { min: 200000, max: 250000 };
+    case "$250k+":
+      return { min: 250000, max: Infinity };
+    default:
+      return null;
+  }
 };
 
 // Main App Component
@@ -30,19 +39,20 @@ const App = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filters, setFilters] = useState({
     search: "",
-    location: "",
+    locations: [], // Changed to array for chips
     skills: [],
     educationLevel: "",
     experienceLevel: "",
-    salaryMin: 0,
-    salaryMax: 300000,
+    salaryExpectation: "", // Changed to salary expectation range
     workAvailability: "",
+    status: "", // Added status filter
   });
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 15;
 
   // Load candidates data with retry mechanism
   useEffect(() => {
+    setIsLoading(false);
     const loadCandidates = () => {
       try {
         if (
@@ -56,18 +66,15 @@ const App = () => {
             id: uniqueId(`${Date.now()}-${candidate.email}`),
           }));
           setCandidates(candidatesWithUniqueIds);
-          setIsLoading(false);
         } else {
-          setIsLoading(false);
-          throw new Error("No valid candidates data found");
+          throw new Error("No candidates data found");
         }
       } catch (error) {
-        console.error("Error loading candidates:", error);
-        setIsLoading(false);
+        console.error("Error", error);
       }
     };
     loadCandidates();
-  }, [isLoading]);
+  }, []);
 
   // Get unique values for filters
   const uniqueLocations = useMemo(() => {
@@ -82,13 +89,10 @@ const App = () => {
   }, [candidates]);
 
   // Debounced search
-  const debouncedSearch = useCallback(
-    debounce((searchTerm) => {
-      setFilters((prev) => ({ ...prev, search: searchTerm }));
-      setCurrentPage(1);
-    }, 200),
-    []
-  );
+  const debouncedSearch = debounce((searchTerm) => {
+    setFilters((prev) => ({ ...prev, search: searchTerm }));
+    setCurrentPage(1);
+  }, 200);
 
   // Update search when searchTerm changes
   useEffect(() => {
@@ -104,12 +108,14 @@ const App = () => {
         candidate.location
           .toLowerCase()
           .includes(filters.search.toLowerCase()) ||
+        candidate.email.toLowerCase().includes(filters.search.toLowerCase()) ||
         (candidate.skills || []).some((skill) =>
           skill.toLowerCase().includes(filters.search.toLowerCase())
         );
 
       const matchesLocation =
-        !filters.location || candidate.location === filters.location;
+        filters.locations.length === 0 ||
+        filters.locations.includes(candidate.location);
 
       const matchesSkills =
         filters.skills.length === 0 ||
@@ -138,12 +144,33 @@ const App = () => {
         parseInt(
           candidate.annual_salary_expectation?.["full-time"]?.replace("$", "")
         ) || 0;
+
       const matchesSalary =
-        salary >= filters.salaryMin && salary <= filters.salaryMax;
+        !filters.salaryExpectation ||
+        (() => {
+          const range = getSalaryRange(filters.salaryExpectation);
+          return range && salary >= range.min && salary <= range.max;
+        })();
 
       const matchesAvailability =
         !filters.workAvailability ||
         (candidate.work_availability || []).includes(filters.workAvailability);
+
+      const matchesStatus =
+        !filters.status ||
+        (() => {
+          const candidateId = candidate.id;
+          switch (filters.status) {
+            case "Final Selected":
+              return finalSelection.some((c) => c.id === candidateId);
+            case "Shortlisted":
+              return shortlist.some((c) => c.id === candidateId);
+            case "Rejected":
+              return rejectedCandidates.some((c) => c.id === candidateId);
+            default:
+              return true;
+          }
+        })();
 
       return (
         matchesSearch &&
@@ -152,10 +179,11 @@ const App = () => {
         matchesEducation &&
         matchesExperience &&
         matchesSalary &&
-        matchesAvailability
+        matchesAvailability &&
+        matchesStatus
       );
     });
-  }, [candidates, filters]);
+  }, [candidates, filters, shortlist, finalSelection, rejectedCandidates]);
 
   // Paginated candidates
   const paginatedCandidates = useMemo(() => {
@@ -245,13 +273,13 @@ const App = () => {
   const resetFilters = () => {
     setFilters({
       search: "",
-      location: "",
+      locations: [], // Changed to array
       skills: [],
       educationLevel: "",
       experienceLevel: "",
-      salaryMin: 0,
-      salaryMax: 300000,
+      salaryExpectation: "", // Changed to salary expectation range
       workAvailability: "",
+      status: "", // Added status filter
     });
     setSearchTerm("");
     setCurrentPage(1);
@@ -540,14 +568,129 @@ const BrowseCandidates = ({
   addToFinalSelection,
   removeFromFinalSelection,
 }) => {
-  const handleSkillToggle = (skill) => {
-    setFilters((prev) => ({
-      ...prev,
-      skills: prev.skills.includes(skill)
-        ? prev.skills.filter((s) => s !== skill)
-        : [...prev.skills, skill],
-    }));
-    setCurrentPage(1);
+  // Chip Input Component for locations and skills
+  const ChipInput = ({
+    label,
+    placeholder,
+    options,
+    selectedChips,
+    onAddChip,
+    onRemoveChip,
+  }) => {
+    const [input, setInput] = useState("");
+    const [suggestions, setSuggestions] = useState([]);
+    const [isOpen, setIsOpen] = useState(false);
+    const inputRef = useRef(null);
+
+    const handleInputChange = (e) => {
+      const value = e.target.value;
+      setInput(value);
+
+      if (value.trim()) {
+        const filtered = options
+          .filter(
+            (option) =>
+              option.toLowerCase().includes(value.toLowerCase()) &&
+              !selectedChips.includes(option)
+          )
+          .slice(0, 10);
+        setSuggestions(filtered);
+        setIsOpen(true); // Always show dropdown when typing
+      } else {
+        // Show first 10 options when input is empty but focused
+        const defaultSuggestions = options
+          .filter((option) => !selectedChips.includes(option))
+          .slice(0, 10);
+        setSuggestions(defaultSuggestions);
+        setIsOpen(defaultSuggestions.length > 0);
+      }
+    };
+
+    const handleFocus = () => {
+      if (!input.trim()) {
+        const defaultSuggestions = options
+          .filter((option) => !selectedChips.includes(option))
+          .slice(0, 10);
+        setSuggestions(defaultSuggestions);
+        setIsOpen(defaultSuggestions.length > 0);
+      } else {
+        setIsOpen(suggestions.length > 0);
+      }
+    };
+
+    const addChip = (option) => {
+      onAddChip(option);
+      setInput("");
+      setSuggestions([]);
+      setIsOpen(false);
+      // Focus back to input
+      setTimeout(() => inputRef.current?.focus(), 0);
+    };
+
+    const removeChip = (chip) => {
+      onRemoveChip(chip);
+      // Focus back to input
+      setTimeout(() => inputRef.current?.focus(), 0);
+    };
+
+    const handleKeyDown = (e) => {
+      if (e.key === "Backspace" && !input && selectedChips.length > 0) {
+        removeChip(selectedChips[selectedChips.length - 1]);
+      }
+    };
+
+    return (
+      <div className="chip-input-container">
+        <label className="form-label">{label}</label>
+        <div className="chip-input-wrapper" style={{ position: "relative" }}>
+          <div className="chip-input-field">
+            {selectedChips.map((chip) => (
+              <span key={chip} className="input-chip">
+                {chip}
+                <button
+                  className="input-chip__remove"
+                  onClick={() => removeChip(chip)}
+                  type="button"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <input
+              ref={inputRef}
+              type="text"
+              className="chip-input"
+              placeholder={selectedChips.length === 0 ? placeholder : ""}
+              value={input}
+              onChange={handleInputChange}
+              onFocus={handleFocus}
+              onKeyDown={handleKeyDown}
+              onBlur={() => {
+                setTimeout(() => setIsOpen(false), 200);
+              }}
+            />
+          </div>
+
+          {isOpen && (
+            <div className="autocomplete-dropdown">
+              {suggestions.length > 0 ? (
+                suggestions.map((suggestion) => (
+                  <div
+                    key={suggestion}
+                    className="autocomplete-option"
+                    onClick={() => addChip(suggestion)}
+                  >
+                    {suggestion}
+                  </div>
+                ))
+              ) : (
+                <div className="autocomplete-no-results">No results found</div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
   };
 
   const handleFilterChange = (filterName, value) => {
@@ -558,33 +701,62 @@ const BrowseCandidates = ({
   return (
     <div>
       <div className="filter-panel">
+        {/* Row 1: Search Bar */}
         <div className="search-bar">
           <input
             type="text"
             className="form-control"
-            placeholder="Search by name, location, or skills..."
+            placeholder="Search by name, email, location, or skills..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
         </div>
 
-        <div className="filter-grid">
-          <div>
-            <label className="form-label">Location</label>
-            <select
-              className="form-control"
-              value={filters.location}
-              onChange={(e) => handleFilterChange("location", e.target.value)}
-            >
-              <option value="">All Locations</option>
-              {uniqueLocations.map((location) => (
-                <option key={location} value={location}>
-                  {location}
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* Row 2: Location and Skills Chip Inputs */}
+        <div className="filter-row-chips">
+          <ChipInput
+            label="Location"
+            placeholder="Type to search locations..."
+            options={uniqueLocations}
+            selectedChips={filters.locations}
+            onAddChip={(location) => {
+              setFilters((prev) => ({
+                ...prev,
+                locations: [...prev.locations, location],
+              }));
+              setCurrentPage(1);
+            }}
+            onRemoveChip={(location) => {
+              setFilters((prev) => ({
+                ...prev,
+                locations: prev.locations.filter((loc) => loc !== location),
+              }));
+            }}
+          />
 
+          <ChipInput
+            label="Skills"
+            placeholder="Type to search skills..."
+            options={uniqueSkills}
+            selectedChips={filters.skills}
+            onAddChip={(skill) => {
+              setFilters((prev) => ({
+                ...prev,
+                skills: [...prev.skills, skill],
+              }));
+              setCurrentPage(1);
+            }}
+            onRemoveChip={(skill) => {
+              setFilters((prev) => ({
+                ...prev,
+                skills: prev.skills.filter((s) => s !== skill),
+              }));
+            }}
+          />
+        </div>
+
+        {/* Row 3: Other Dropdown Filters */}
+        <div className="filter-grid">
           <div>
             <label className="form-label">Education Level</label>
             <select
@@ -632,43 +804,40 @@ const BrowseCandidates = ({
               <option value="part-time">Part-time</option>
             </select>
           </div>
-        </div>
 
-        {uniqueSkills.length > 0 && (
           <div>
-            <label className="form-label">Skills (click to filter)</label>
-            <div
-              className="flex"
-              style={{
-                flexWrap: "wrap",
-                gap: "var(--space-8)",
-                marginTop: "var(--space-8)",
-              }}
+            <label className="form-label">Salary Expectation</label>
+            <select
+              className="form-control"
+              value={filters.salaryExpectation}
+              onChange={(e) =>
+                handleFilterChange("salaryExpectation", e.target.value)
+              }
             >
-              {uniqueSkills.slice(0, 15).map((skill) => (
-                <button
-                  key={skill}
-                  className={`skill-tag ${
-                    filters.skills.includes(skill) ? "btn--primary" : ""
-                  }`}
-                  style={{
-                    cursor: "pointer",
-                    border: "none",
-                    ...(filters.skills.includes(skill)
-                      ? {
-                          backgroundColor: "var(--color-primary)",
-                          color: "var(--color-btn-primary-text)",
-                        }
-                      : {}),
-                  }}
-                  onClick={() => handleSkillToggle(skill)}
-                >
-                  {skill}
-                </button>
-              ))}
-            </div>
+              <option value="">All Ranges</option>
+              <option value="$0 - $50k">$0 - $50k</option>
+              <option value="$50k - $100k">$50k - $100k</option>
+              <option value="$100k - $150k">$100k - $150k</option>
+              <option value="$150k - $200k">$150k - $200k</option>
+              <option value="$200k - $250k">$200k - $250k</option>
+              <option value="$250k+">$250k+</option>
+            </select>
           </div>
-        )}
+
+          <div>
+            <label className="form-label">Status</label>
+            <select
+              className="form-control"
+              value={filters.status}
+              onChange={(e) => handleFilterChange("status", e.target.value)}
+            >
+              <option value="">All Status</option>
+              <option value="Final Selected">Final Selected</option>
+              <option value="Shortlisted">Shortlisted</option>
+              <option value="Rejected">Rejected</option>
+            </select>
+          </div>
+        </div>
 
         <div className="filter-actions">
           <div className="filter-summary">
